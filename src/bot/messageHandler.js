@@ -2,7 +2,6 @@ const { prisma } = require('../utils/database');
 const { STATES, COLLECT_STEPS } = require('./states');
 const { getBotConfig } = require('../services/configService');
 const { createOrderFromConversation } = require('../services/orderService');
-const { sendMessage } = require('./whatsappClient');
 const logger = require('../utils/logger');
 
 // Extraire le texte brut d'un message Baileys
