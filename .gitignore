@@ -1,0 +1,21 @@
+# Dépendances Node.js
+node_modules/
+jspm_packages/
+# Fichiers de configuration locale et secrets (CRITIQUE)
+.env
+.env.local
+.env.*.local
+*.env
+# Fichiers de logs et rapports d'erreurs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+# Dossiers de build ou compilation (si utilisation de TypeScript/Babel)
+dist/
+lib/
+.swc/
+# Base de données locale / SQLite en développement
+*.db
+*.sqlite
