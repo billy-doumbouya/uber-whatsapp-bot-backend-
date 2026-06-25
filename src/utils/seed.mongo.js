@@ -7,8 +7,8 @@
 require('dotenv').config();
 
 const bcrypt     = require('bcryptjs');
-const { adminDb, botConfigDb } = require('../lib/db.mongo');
-const { initDb }               = require('../lib/db-init.mongo');
+const { adminDb, botConfigDb } = require('../lib/db');
+const { initDb }               = require('../lib/db-init');
 const logger                   = require('./logger');
 
 const DEFAULT_BOT_CONFIG = [
