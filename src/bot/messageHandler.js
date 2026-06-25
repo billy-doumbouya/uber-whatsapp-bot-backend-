@@ -1,10 +1,18 @@
-const { prisma } = require('../utils/database');
-const { STATES, COLLECT_STEPS } = require('./states');
-const { getBotConfig } = require('../services/configService');
-const { createOrderFromConversation } = require('../services/orderService');
-const logger = require('../utils/logger');
+// src/bot/messageHandler.js — migré MongoDB
+// ──────────────────────────────────────────────────────────────
+// Remplace toutes les API Prisma native par la couche db.mongo :
+//   prisma.conversation.*  → conversationDb.*
+//   prisma.messageLog.*    → messageLogDb.*
+// ──────────────────────────────────────────────────────────────
 
-// Extraire le texte brut d'un message Baileys
+const { conversationDb, messageLogDb } = require('../lib/db');
+const { STATES, COLLECT_STEPS }        = require('./states');
+const { getBotConfig }                 = require('../services/configService');
+const { createOrderFromConversation }  = require('../services/orderService');
+const logger                           = require('../utils/logger');
+
+// ─── Helpers Baileys ────────────────────────────────────────
+
 function extractText(message) {
   const msg = message.message;
   if (!msg) return '';
@@ -17,22 +25,21 @@ function extractText(message) {
   ).trim();
 }
 
-// Extraire le numéro de téléphone propre depuis le JID Baileys
 function extractPhone(jid) {
   return jid.replace('@s.whatsapp.net', '').replace('@c.us', '');
 }
 
-// Vérifier si le bot est actif
 async function isBotActive() {
   const config = await getBotConfig('bot_active');
   return config === 'true';
 }
 
-// Point d'entrée principal pour chaque message reçu
+// ─── Point d'entrée principal ────────────────────────────────
+
 async function handleMessage(sock, message) {
-  const jid = message.key.remoteJid;
-  const phone = extractPhone(jid);
-  const text = extractText(message);
+  const jid     = message.key.remoteJid;
+  const phone   = extractPhone(jid);
+  const text    = extractText(message);
   const isMedia = !!(
     message.message?.imageMessage ||
     message.message?.documentMessage
@@ -40,77 +47,70 @@ async function handleMessage(sock, message) {
 
   logger.info({ phone, text, isMedia }, 'Message reçu');
 
-  // Log en base
-  await prisma.messageLog.create({
-    data: {
-      phone,
-      direction: 'IN',
-      content: text || '[media]',
-      type: isMedia ? 'image' : 'text',
-    },
+  // Log du message entrant
+  await messageLogDb.create({
+    phone,
+    direction: 'IN',
+    content:   text || '[media]',
+    type:      isMedia ? 'image' : 'text',
   });
 
-  // Vérifier si le bot est actif
   if (!(await isBotActive())) {
     logger.info('Bot inactif, message ignoré');
     return;
   }
 
   // Récupérer ou créer la conversation
-  let conv = await prisma.conversation.findUnique({ where: { phone } });
+  // conversationDb.upsert fait un INSERT ... ON CONFLICT (phone) DO UPDATE
+  // → idempotent, remplace prisma.conversation.findUnique + create
+  let conv = await conversationDb.findByPhone(phone);
   if (!conv) {
-    conv = await prisma.conversation.create({
-      data: { phone, state: STATES.IDLE, data: '{}' },
-    });
+    conv = await conversationDb.upsert({ phone, state: STATES.IDLE, data: {} });
   }
 
-  const convData = JSON.parse(conv.data);
+  // `data` est déjà un objet JS (conversationDb désérialise le JSON automatiquement)
+  const convData = conv.data ?? {};
 
-  // --- ROUTING PAR ÉTAT ---
+  // ── ROUTING PAR ÉTAT ──────────────────────────────────────
 
-  // État IDLE ou COMPLETED : accueillir si l'utilisateur écrit
   if (conv.state === STATES.IDLE || conv.state === STATES.COMPLETED) {
     const trigger = text.toLowerCase();
     if (
       trigger.includes('commencer') ||
-      trigger.includes('bonjour') ||
-      trigger.includes('salut') ||
-      trigger.includes('visa') ||
-      trigger.includes('carte') ||
-      trigger.includes('hello') ||
-      trigger.includes('start') ||
+      trigger.includes('bonjour')   ||
+      trigger.includes('salut')     ||
+      trigger.includes('visa')      ||
+      trigger.includes('carte')     ||
+      trigger.includes('hello')     ||
+      trigger.includes('start')     ||
       conv.state === STATES.IDLE
     ) {
       return await startConversation(phone, conv, sock);
     }
-    // Message quelconque sur une conv terminée
     const closing = await getBotConfig('closing_message');
     return await reply(phone, `Votre commande est déjà enregistrée. ✅\n\nPour une nouvelle commande, tapez *COMMENCER*.\n\n${closing}`);
   }
 
-  // État AWAIT_DOCUMENTS : recevoir les pièces jointes
   if (conv.state === STATES.AWAIT_DOCUMENTS) {
     return await handleDocumentUpload(phone, conv, message, isMedia, text, sock);
   }
 
-  // États de collecte des informations
   const step = COLLECT_STEPS.find((s) => s.state === conv.state);
   if (step) {
     return await handleCollectStep(phone, conv, convData, step, text, sock);
   }
 
-  // État SEND_FORM_LINK : attendre confirmation
   if (conv.state === STATES.SEND_FORM_LINK) {
     return await handleFormLinkState(phone, conv, convData, text, sock);
   }
 
-  // Fallback
   await reply(phone, 'Désolé, je n\'ai pas compris. Tapez *COMMENCER* pour recommencer.');
 }
 
-// Démarrer la conversation : envoyer le message de bienvenue
+// ─── Démarrer la conversation ────────────────────────────────
+
 async function startConversation(phone, conv, sock) {
-  const welcome = await getBotConfig('welcome_message');
+  const welcome   = await getBotConfig('welcome_message');
   await reply(phone, welcome);
 
   const firstStep = COLLECT_STEPS[0];
@@ -118,18 +118,16 @@ async function startConversation(phone, conv, sock) {
   await reply(phone, firstStep.question);
 }
 
-// Traiter une étape de collecte
+// ─── Étape de collecte ───────────────────────────────────────
+
 async function handleCollectStep(phone, conv, convData, step, text, sock) {
-  // Valider si une règle de validation existe
   if (step.validate && !step.validate(text)) {
-    // Champ optionnel : accepter "passer"
     if (step.optional && text.toLowerCase() === 'passer') {
       convData[step.field] = null;
     } else {
       return await reply(phone, step.errorMsg || '❌ Valeur invalide, veuillez réessayer.');
     }
   } else {
-    // Transformer la valeur si nécessaire
     const value = step.transform ? step.transform(text) : text;
     if (value === null) {
       return await reply(phone, step.errorMsg || '❌ Valeur invalide, veuillez réessayer.');
@@ -137,25 +135,23 @@ async function handleCollectStep(phone, conv, convData, step, text, sock) {
     convData[step.field] = value;
   }
 
-  // Passer à l'étape suivante
   await updateConversation(conv.id, step.next, convData);
 
-  // Si l'étape suivante est l'envoi du lien formulaire
   if (step.next === STATES.SEND_FORM_LINK) {
     return await sendFormLink(phone, conv.id, convData);
   }
 
-  // Sinon poser la prochaine question
   const nextStep = COLLECT_STEPS.find((s) => s.state === step.next);
   if (nextStep) {
     await reply(phone, nextStep.question);
   }
 }
 
-// Envoyer le lien vers le formulaire complet
+// ─── Envoi du lien formulaire ────────────────────────────────
+
 async function sendFormLink(phone, convId, convData) {
   const formBaseUrl = await getBotConfig('form_url');
-  const formUrl = `${formBaseUrl}?conv=${convId}`;
+  const formUrl     = `${formBaseUrl}?conv=${convId}`;
 
   const msg =
     `✅ Parfait ! Voici un récapitulatif de vos informations :\n\n` +
@@ -172,7 +168,8 @@ async function sendFormLink(phone, convId, convData) {
   await reply(phone, msg);
 }
 
-// État intermédiaire après envoi du lien
+// ─── État SEND_FORM_LINK ─────────────────────────────────────
+
 async function handleFormLinkState(phone, conv, convData, text, sock) {
   const lower = text.toLowerCase();
   if (lower.includes('ok') || lower.includes('fait') || lower.includes('envoy')) {
@@ -183,24 +180,25 @@ async function handleFormLinkState(phone, conv, convData, text, sock) {
     );
   } else {
     const formBaseUrl = await getBotConfig('form_url');
-    const formUrl = `${formBaseUrl}?conv=${conv.id}`;
+    const formUrl     = `${formBaseUrl}?conv=${conv.id}`;
     await reply(phone, `Avez-vous complété le formulaire ? 🔗 ${formUrl}\n\nRépondez *OK* quand c'est fait.`);
   }
 }
 
-// Recevoir les documents / photos WhatsApp
+// ─── Réception des documents ─────────────────────────────────
+
 async function handleDocumentUpload(phone, conv, message, isMedia, text, sock) {
   if (text.toLowerCase() === 'terminer') {
     return await finalizeOrder(phone, conv);
   }
 
   if (isMedia) {
-    // Stocker une référence (le téléchargement réel se fait dans orderService)
-    const convData = JSON.parse(conv.data);
+    // conv.data est déjà un objet JS — pas besoin de JSON.parse
+    const convData = { ...(conv.data ?? {}) };
     if (!convData.pendingMedia) convData.pendingMedia = [];
     convData.pendingMedia.push({
       messageId: message.key.id,
-      type: message.message?.imageMessage ? 'image' : 'document',
+      type:      message.message?.imageMessage ? 'image' : 'document',
       timestamp: Date.now(),
     });
     await updateConversation(conv.id, STATES.AWAIT_DOCUMENTS, convData);
@@ -210,15 +208,19 @@ async function handleDocumentUpload(phone, conv, message, isMedia, text, sock) {
   }
 }
 
-// Finaliser la commande et créer le dossier Google Drive
+// ─── Finalisation de la commande ─────────────────────────────
+
 async function finalizeOrder(phone, conv) {
   await reply(phone, '⏳ Création de votre dossier en cours...');
 
   try {
-    const order = await createOrderFromConversation(conv);
+    // conv.data est un objet JS — createOrderFromConversation l'accepte tel quel
+    const order      = await createOrderFromConversation(conv);
     const closingMsg = await getBotConfig('closing_message');
 
-    await updateConversation(conv.id, STATES.COMPLETED, JSON.parse(conv.data), new Date());
+    // Marquer la conversation comme terminée
+    // conversationDb.complete() fait : state = 'DONE', completedAt = now()
+    await conversationDb.complete(phone);
 
     await reply(phone, closingMsg || '✅ Votre dossier a été créé avec succès ! Notre équipe vous contactera bientôt.');
     logger.info({ orderId: order.id, phone }, 'Commande créée avec succès');
@@ -231,28 +233,36 @@ async function finalizeOrder(phone, conv) {
   }
 }
 
-// Helpers
+// ─── Helpers ─────────────────────────────────────────────────
+
 async function reply(phone, text) {
   try {
     const { sendMessage } = require('./whatsappClient');
     await sendMessage(phone, text);
-    await prisma.messageLog.create({
-      data: { phone, direction: 'OUT', content: text, type: 'text' },
-    });
+    await messageLogDb.create({ phone, direction: 'OUT', content: text, type: 'text' });
   } catch (err) {
     logger.error({ err, phone }, 'Erreur envoi message');
   }
 }
 
+// Remplace prisma.conversation.update({ where: { id }, data: { state, data } })
+// conversationDb.update(phone) n'existe qu'avec phone comme clé —
+// on passe par upsert via phone pour les updates intermédiaires,
+// mais on a besoin du phone ici. On enrichit en récupérant la conv par id.
 async function updateConversation(id, state, data, completedAt = null) {
-  await prisma.conversation.update({
-    where: { id },
-    data: {
-      state,
-      data: JSON.stringify(data),
-      ...(completedAt ? { completedAt } : {}),
-    },
-  });
+  // Récupérer le phone depuis l'id (nécessaire car conversationDb.update() prend phone)
+  const conv = await conversationDb.findById(id);
+  if (!conv) {
+    logger.warn(`updateConversation: conversation ${id} introuvable`);
+    return;
+  }
+
+  if (completedAt) {
+    // complete() gère state = 'DONE' + completedAt
+    await conversationDb.complete(conv.phone);
+  } else {
+    await conversationDb.update(conv.phone, { state, data });
+  }
 }
 
 module.exports = { handleMessage };

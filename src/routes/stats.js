@@ -1,13 +1,19 @@
-const express = require('express');
+// routes/stats.js — migré MongoDB
+const express         = require('express');
 const { requireAuth } = require('../middleware/auth');
-const { prisma } = require('../utils/database');
+const { Order, Conversation } = require('../models');
 
 const router = express.Router();
 router.use(requireAuth);
 
-// GET /api/stats - Métriques pour le dashboard
+// GET /api/stats
 router.get('/', async (req, res) => {
   try {
+    const now   = new Date();
+    const ago24h = new Date(now - 1 * 24 * 60 * 60 * 1000);
+    const ago7d  = new Date(now - 7 * 24 * 60 * 60 * 1000);
+
+    // ── Tous les counts en parallèle ─────────────────────────
     const [
       totalOrders,
       pendingOrders,
@@ -17,54 +23,70 @@ router.get('/', async (req, res) => {
       totalConversations,
       activeConversations,
       recentOrders,
+      ordersPerDayRaw,
     ] = await Promise.all([
-      prisma.order.count(),
-      prisma.order.count({ where: { status: 'PENDING' } }),
-      prisma.order.count({ where: { status: 'PROCESSING' } }),
-      prisma.order.count({ where: { status: 'DONE' } }),
-      prisma.order.count({ where: { status: 'CANCELLED' } }),
-      prisma.conversation.count(),
-      prisma.conversation.count({
-        where: {
-          state: { notIn: ['IDLE', 'COMPLETED'] },
-          updatedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-        },
-      }),
-      prisma.order.findMany({
-        orderBy: { createdAt: 'desc' },
-        take: 5,
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          cardType: true,
-          status: true,
-          createdAt: true,
-        },
-      }),
-    ]);
 
-    // Commandes des 7 derniers jours par jour
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const ordersPerDay = await prisma.order.groupBy({
-      by: ['createdAt'],
-      where: { createdAt: { gte: sevenDaysAgo } },
-      _count: true,
-    });
+      // 0 — total orders
+      Order.countDocuments(),
+
+      // 1 — pending
+      Order.countDocuments({ status: 'PENDING' }),
+
+      // 2 — processing
+      Order.countDocuments({ status: 'PROCESSING' }),
+
+      // 3 — done / completed
+      Order.countDocuments({ status: 'COMPLETED' }),
+
+      // 4 — cancelled
+      Order.countDocuments({ status: 'CANCELLED' }),
+
+      // 5 — total conversations
+      Conversation.countDocuments(),
+
+      // 6 — conversations actives (hors IDLE/DONE, updatedAt < 24h)
+      Conversation.countDocuments({
+        state:     { $nin: ['IDLE', 'DONE'] },
+        updatedAt: { $gte: ago24h },
+      }),
+
+      // 7 — 5 dernières commandes
+      Order.find()
+        .select('id firstName lastName cardType status createdAt')
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean(),
+
+      // 8 — commandes 7 derniers jours groupées par jour
+      Order.aggregate([
+        { $match: { createdAt: { $gte: ago7d } } },
+        {
+          $group: {
+            _id: {
+              $dateToString: { format: '%Y-%m-%d', date: '$createdAt' },
+            },
+            n: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+        { $project: { _id: 0, day: '$_id', count: '$n' } },
+      ]),
+    ]);
 
     res.json({
       orders: {
-        total: totalOrders,
-        pending: pendingOrders,
+        total:      totalOrders,
+        pending:    pendingOrders,
         processing: processingOrders,
-        done: doneOrders,
-        cancelled: cancelledOrders,
+        done:       doneOrders,
+        cancelled:  cancelledOrders,
       },
       conversations: {
-        total: totalConversations,
+        total:  totalConversations,
         active: activeConversations,
       },
       recentOrders,
+      ordersPerDay: ordersPerDayRaw,
     });
   } catch (err) {
     console.error(err);
