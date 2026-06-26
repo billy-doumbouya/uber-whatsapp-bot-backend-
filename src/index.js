@@ -8,6 +8,20 @@ const logger = require('./utils/logger');
 
 const PORT = process.env.PORT || 3001;
 
+// ── Parser les URLs multiples séparées par des virgules ──────
+// Même logique que app.js pour garder la cohérence
+function parseUrls(envVar, fallback) {
+  if (!envVar) return [fallback];
+  return envVar.split(',').map(u => u.trim()).filter(Boolean);
+}
+
+const allowedOrigins = [
+  ...new Set([
+    ...parseUrls(process.env.DASHBOARD_URL, 'http://localhost:3000'),
+    ...parseUrls(process.env.FORM_URL,      'http://localhost:3002'),
+  ])
+];
+
 async function main() {
   // 1. Initialiser la base de données
   await initDatabase();
@@ -16,18 +30,16 @@ async function main() {
   // 2. Créer le serveur HTTP
   const server = http.createServer(app);
 
-  // 3. Initialiser Socket.IO (pour le QR code en temps réel)
+  // 3. Initialiser Socket.IO
   const io = new Server(server, {
     cors: {
-      origin: [
-        process.env.DASHBOARD_URL || 'http://localhost:3000',
-        process.env.FORM_URL || 'http://localhost:3002',
-      ],
+      origin: allowedOrigins,
       credentials: true,
     },
   });
 
-  // Rendre io accessible dans toute l'app
+  logger.info(`Origins autorisées: ${allowedOrigins.join(', ')}`);
+
   app.set('io', io);
 
   io.on('connection', (socket) => {

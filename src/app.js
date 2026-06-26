@@ -1,10 +1,4 @@
 // app.js
-// ──────────────────────────────────────────────────────────────
-// Pas de changement fonctionnel vs l'original.
-// Seul ajout : export de l'app pour que server.js puisse appeler
-// initDb() AVANT app.listen().
-// ──────────────────────────────────────────────────────────────
-
 const express      = require('express');
 const cors         = require('cors');
 const helmet       = require('helmet');
@@ -20,6 +14,22 @@ const statsRoutes     = require('./routes/stats');
 
 const app = express();
 
+// ── Parser les URLs multiples séparées par des virgules ──────
+// DASHBOARD_URL=http://localhost:3000,https://dashboard.vercel.app
+// → ['http://localhost:3000', 'https://dashboard.vercel.app']
+function parseUrls(envVar, fallback) {
+  if (!envVar) return [fallback];
+  return envVar.split(',').map(u => u.trim()).filter(Boolean);
+}
+
+const allowedOrigins = [
+  ...parseUrls(process.env.DASHBOARD_URL, 'http://localhost:3000'),
+  ...parseUrls(process.env.FORM_URL,      'http://localhost:3002'),
+];
+
+// Dédupliquer au cas où une URL apparaît dans les deux variables
+const origins = [...new Set(allowedOrigins)];
+
 // ══════════════════════════════════════════
 // Sécurité & middlewares globaux
 // ══════════════════════════════════════════
@@ -29,10 +39,12 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: [
-    process.env.DASHBOARD_URL || 'http://localhost:3000',
-    process.env.FORM_URL      || 'http://localhost:3002',
-  ],
+  origin: (origin, callback) => {
+    // Autoriser les requêtes sans origin (Postman, curl, mobile apps)
+    if (!origin) return callback(null, true);
+    if (origins.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS bloqué: ${origin}`));
+  },
   credentials:    true,
   methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -54,9 +66,9 @@ app.use('/api/whatsapp',  whatsappRoutes);
 app.use('/api/form',      formRoutes);
 app.use('/api/stats',     statsRoutes);
 
-// Health check Railway — inclut un indicateur db
+// Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() });
+  res.json({ status: 'ok', uptime: process.uptime(), origins });
 });
 
 // 404

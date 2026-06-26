@@ -59,7 +59,7 @@ async function seed() {
 
   if (!existingAdmin) {
     const hashed = await bcrypt.hash(
-      process.env.ADMIN_PASSWORD || 'Admin@2024!',
+      process.env.ADMIN_PASSWORD || 'Admin@2024',
       12
     );
     await adminDb.create({
