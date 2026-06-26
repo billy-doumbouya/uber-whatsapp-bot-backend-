@@ -14,7 +14,7 @@ pnpm-debug.log*
 lerna-debug.log*
 # Dossiers de build ou compilation (si utilisation de TypeScript/Babel)
 dist/
-lib/
+dist/lib/
 .swc/
 # Base de données locale / SQLite en développement
 *.db
