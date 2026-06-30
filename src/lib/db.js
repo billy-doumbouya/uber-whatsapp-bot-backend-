@@ -15,6 +15,9 @@ const {
   Admin, Session, BotConfig,
   Conversation, Order, Document, MessageLog,
 } = require('../models');
+const dns = require('dns');
+
+dns.setDefaultResultOrder('verbatim');
 
 // ─── helper : retourne un objet JS pur depuis un doc Mongoose ──
 // `.toObject()` supprime les proxies Mongoose et `_id` interne.

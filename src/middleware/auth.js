@@ -22,6 +22,12 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: 'Session expirée, veuillez vous reconnecter' });
     }
 
+    // ← AJOUTEZ CES LIGNES
+if (!session.admin) {
+  res.clearCookie('auth_token');
+  return res.status(401).json({ error: 'Admin introuvable' });
+}
+
     req.admin        = session.admin;
     req.sessionToken = token;
     next();

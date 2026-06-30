@@ -65,7 +65,7 @@ const ConversationSchema = new Schema(
     phone:       { type: String, required: true, unique: true, index: true },
     state:       {
       type: String,
-      enum: ['IDLE', 'COLLECTING', 'WAITING_FORM', 'DONE'],
+      enum: ['IDLE', 'COLLECTING', 'WAITING_FORM', 'DONE', 'COLLECT_FIRST_NAME' ],
       default: 'IDLE',
     },
     data:        { type: Schema.Types.Mixed, default: {} },
