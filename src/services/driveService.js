@@ -53,15 +53,17 @@ async function uploadJson(folderId, fileName, data) {
 }
 
 // Partager un dossier (lecture pour tous avec le lien)
-async function shareFolderPublic(folderId) {
+async function shareFolderRestricted(folderId, adminEmail= process.env.ADMIN_EMAIL) {
   const drive = getDriveClient();
   await drive.permissions.create({
     fileId: folderId,
     requestBody: {
       role: 'reader',
-      type: 'anyone',
+      type: 'user',
+      emailAddress: adminEmail, // l'email admin (ou un groupe Google Workspace)
     },
+    sendNotificationEmail: false,
   });
 }
 
-module.exports = { createFolder, uploadFile, uploadJson, shareFolderPublic };
+module.exports = { createFolder, uploadFile, uploadJson, shareFolderRestricted };

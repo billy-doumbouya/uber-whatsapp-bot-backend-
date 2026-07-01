@@ -18,4 +18,7 @@ dist/lib/
 .swc/
 # Base de données locale / SQLite en développement
 *.db
+
+scripts/client_secret.json
+src/scritps/client_secret.json
 *.sqlite
